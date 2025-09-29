@@ -1,0 +1,63 @@
+name: Deploy to S3 via OIDC
+
+on:
+  push:
+    branches: [ main ]   # 배포 브랜치
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    permissions:
+      id-token: write     # ★ OIDC 토큰 발급 허용
+      contents: read
+
+    env:
+      AWS_REGION: ap-northeast-2
+      S3_BUCKET: qwqw-qwqw
+      CF_DISTRIBUTION_ID: E1KYRJ11YOHAXD   # CloudFront 쓰면
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Build (Vite)
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm run build   # dist/
+          echo "Build completed. Checking dist directory:"
+          ls -la dist/ || echo "dist directory not found"
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::682635052170:role/qwqw-qwqw_Role
+          aws-region: ap-northeast-2 
+
+      - name: Upload to S3 (cache strategy)
+        run: |
+          echo "Checking dist directory contents:"
+          ls -la dist/
+          echo "Syncing assets to S3..."
+          aws s3 sync dist s3://$S3_BUCKET/ \
+            --delete \
+            --cache-control 'public,max-age=31536000,immutable' \
+            --exclude 'index.html'
+          echo "Uploading index.html..."
+          aws s3 cp dist/index.html s3://$S3_BUCKET/index.html \
+            --cache-control 'no-cache'
+
+      - name: Invalidate CloudFront (optional)
+        if: env.CF_DISTRIBUTION_ID != ''
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id $CF_DISTRIBUTION_ID \
+            --paths "/index.html" "/assets/*"
